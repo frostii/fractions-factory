@@ -1,0 +1,488 @@
+# Fractions Factory — Developer Documentation
+
+## Overview
+
+An educational fractions game for children aged 8–10, built as a **single React JSX file** (`FractionsFactory.jsx`). The player controls a top-down chef character who picks up food from a conveyor belt, cuts it at fraction tables, and boxes the correct number of pieces to fulfil orders.
+
+**Target audience:** 8–10 year olds  
+**Languages:** French (default) and English  
+**Viewport:** 900 × 600 px fixed canvas  
+**Tech stack:** React 18 + hooks, inline SVG graphics, Web Audio API, zero external dependencies beyond React itself  
+
+---
+
+## Project Structure
+
+```
+fractions-factory/
+├── FractionsFactory.jsx      ← Entire game (single file, ~1 500 lines)
+├── package.json              ← Vite + React dev setup
+├── vite.config.js
+├── index.html
+├── src/
+│   └── main.jsx              ← Entry point (renders <FractionsFactory />)
+└── DOC/
+    └── FRACTIONS_FACTORY.md  ← This file
+```
+
+### Running locally
+
+```bash
+npm install          # one-time
+npm run dev          # opens http://localhost:5173
+npm run build        # production build → dist/
+```
+
+---
+
+## File Layout (FractionsFactory.jsx)
+
+The file is organised top-to-bottom in this order:
+
+| Line range | Section |
+|---|---|
+| 3–162 | `STRINGS` — i18n translation object (fr / en) |
+| 163–215 | Constants, level config, station layout, colour maps |
+| 216–316 | Pure helper functions |
+| 317–431 | Audio (Web Audio API) |
+| 432–450 | `FoodSVG` — renders any food at any size |
+| 451–490 | `CarriedPieceSVG` — mini piece graphic shown above player |
+| 491–577 | `CuttingDisplay` — cutting-screen SVG |
+| 578–603 | `Confetti` |
+| 590–604 | `KnifeIcon` |
+| 605–673 | Station renderers (`ConveyorBelt`, `CuttingTable`, `BoxingArea`, `BinStation`) |
+| 674–728 | `Player` |
+| 729–744 | `Btn` helper component |
+| 745–828 | `SettingsPanel`, `HomeConfirm` |
+| 830–1474 | `FractionsFactory` — main component (all state, game loop, screen renders) |
+| 1475–1511 | `GlobalStyle` — CSS keyframe animations injected via `<style>` |
+
+---
+
+## Constants Reference
+
+```js
+GAME_W = 900          // canvas width  (px)
+GAME_H = 600          // canvas height (px)
+PLAYER_SPEED = 190    // pixels per second
+PLAYER_R = 18         // player collision/display radius (px)
+INTERACT_TIME = 1000  // ms player must stand still to trigger a station
+INTERACT_DIST = 36    // px beyond collision radius that counts as "adjacent"
+FRAC_TOLERANCE = 0.035 // ±3.5% — how close a piece fraction must be to 1/N to count as correct
+```
+
+---
+
+## Station Layout (`ST`)
+
+All positions are absolute within the 900 × 600 game canvas. `{ x, y, w, h }` in px.
+
+```js
+ST = {
+  conveyor: { x:18,  y:75,  w:290, h:82  },  // landscape belt, top-left
+  boxing:   { x:700, y:68,  w:160, h:130 },  // top-right
+  bin:      { x:700, y:222, w:160, h:100 },  // right, below boxing
+  table0:   { x:100, y:458, w:120, h:95  },  // bottom row, red
+  table1:   { x:260, y:458, w:120, h:95  },  // bottom row, blue
+  table2:   { x:420, y:458, w:120, h:95  },  // bottom row, green
+  table3:   { x:580, y:458, w:120, h:95  },  // bottom row, orange
+}
+```
+
+Player starting position: `{ x: 430, y: 300 }` (centre of the open floor).
+
+**Table colours:** `TABLE_COLORS = ['#C0392B','#2980B9','#27AE60','#D35400']`
+
+Collision is computed as the distance from the player centre to the nearest point on each station rectangle. Interaction triggers when that distance falls below `PLAYER_R + INTERACT_DIST`.
+
+---
+
+## Level Configuration (`LEVELS`)
+
+```js
+{ id, emoji, tables, type, decoys, spo }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | 1–5 | Level number |
+| `emoji` | string | Stars shown on menu |
+| `tables` | number[] | Denominators assigned to the 4 cutting tables (index = table position) |
+| `type` | `'proper'` \| `'improper'` \| `'mixed'` | What kinds of fractions are generated |
+| `decoys` | number | Extra wrong lines shown on the cutting screen |
+| `spo` | number | Stars per order on first correct attempt |
+
+| Level | Tables | Order type | Decoys | Stars/order |
+|---|---|---|---|---|
+| 1 | 2, 3, 4, 5 | proper only | 1 | 1 |
+| 2 | 2, 4, 5, 8 | proper only | 2 | 1 |
+| 3 | 3, 4, 6, 8 | mixed (55% proper) | 2 | 2 |
+| 4 | 3, 5, 7, 10 | improper only | 3 | 3 |
+| 5 | 4, 7, 11, 12 | improper only | 4 | 3 |
+
+---
+
+## Food Items
+
+### Round foods (radial cutting in `CuttingDisplay`)
+`pie`, `pizza`, `apple`, `orange`, `cake`
+
+### Rectangular foods (vertical-strip cutting in `CuttingDisplay`)
+`bread`, `cucumber`, `chocolate`, `butter`, `flapjack`
+
+Food is alternated round/rect across the 5 orders of a level. Each food has an entry in:
+- `FOOD_FILL` — the main body colour used in the cutting display and `CarriedPieceSVG`
+- `LINE_COLORS` — `{ guide, cut }` colours chosen to contrast against that fill
+
+---
+
+## Data Structures
+
+### Order object
+```js
+{ num: number, den: number, food: string, isRound: boolean }
+```
+Generated by `generateOrders(levelId)` — 5 per level, no fractions that simplify to whole numbers.
+
+### Carrying object
+```js
+{
+  food: string,         // food name
+  isRound: boolean,
+  pieces: null | [      // null = whole, array = has been cut
+    { fraction: number }  // actual fraction of whole food this piece represents
+  ],
+  cutDen: number,       // reference denominator of the table used (display only)
+}
+```
+`pieces: null` means the food is whole (freshly picked up). `pieces` is an array after cutting.
+
+### Box item
+```js
+{ fraction: number, food: string }
+```
+Each element is one piece deposited into the boxing area.
+
+### Computed piece (cutting screen)
+```js
+// Round piece
+{ id, fraction, s: {x,y}, e: {x,y}, large: 0|1, midRad, cx, cy }
+
+// Rect piece
+{ id, fraction, x, w, rY, rH }
+```
+`s` and `e` are the SVG arc start/end points on the circle edge. `large` is the SVG large-arc-flag. `midRad` is the angle (radians) toward the piece centroid, used to offset it when selected.
+
+---
+
+## Core Logic
+
+### `generateCutLines(denominator, decoyCount, isRound)`
+
+Returns a shuffled array of line objects:
+- **Round:** `{ angle: number (0–360, degrees from 12-o'clock), isCorrect: boolean }`
+  - Correct lines: `(360 * i) / denominator` for i = 1 … N-1
+  - Minimum 20° separation enforced between any two lines
+- **Rect:** `{ pos: number (0–1, fraction of width), isCorrect: boolean }`
+  - Correct lines: `i / denominator` for i = 1 … N-1
+  - Minimum 0.08 (8%) separation enforced
+
+The array is shuffled so correct lines appear at random positions. `isCorrect` is retained for potential future use (e.g. hint highlighting) but **is not used in order checking** — only the actual piece fractions matter.
+
+### `computePieces(selectedCuts, lines, isRound)`
+
+Called when the player clicks "Done Cutting". Takes the Set of selected line indices and the lines array and returns computed piece objects with:
+- **`fraction`** — the actual proportion of the whole food this piece represents
+- SVG geometry for rendering the selection phase
+
+For round foods: angles are sorted, sectors computed between consecutive angles including the implicit 0°–360° wrap. For rect foods: positions sorted, strips computed between consecutive positions.
+
+**This is the ground truth for order checking.** The table denominator is only a label.
+
+### `checkOrder(box, order, T)`
+
+Validates the box contents against the current order:
+1. Fail if box is empty
+2. Fail if any piece has `|fraction − 1/order.den| > FRAC_TOLERANCE` (3.5%)
+3. Fail if `box.length !== order.num`
+4. Otherwise success
+
+**Important:** this means a player can use wrong cut lines and still pass, as long as they select only correctly-sized pieces. Conversely, using wrong lines and selecting wrong-sized pieces correctly fails.
+
+---
+
+## Game Loop & Interaction Model
+
+The game loop runs via `requestAnimationFrame` inside a `useEffect` that is active only when `screen === 'playing'`. The loop is torn down and restarted whenever `screen` changes.
+
+### Player movement
+Arrow keys are tracked in `keysRef` (a plain object, not state). Each frame:
+1. Compute `dx, dy` from held keys
+2. Normalise to `PLAYER_SPEED * dt` pixels
+3. Apply x and y movement independently (allows sliding along walls)
+4. Collision: circular player vs. rectangular stations using nearest-point distance
+
+### Interaction timer
+When the player is stationary and within `PLAYER_R + INTERACT_DIST` of a station:
+- A golden progress ring fills around the player over `INTERACT_TIME` ms
+- At 100%, `doInteract.current(stationKey)` is called once (`firedRef` prevents repeat)
+- Any movement resets the timer and ring
+
+### The stale-closure problem
+The game loop closure captures no state directly. All state that `doInteract` needs is mirrored into refs that are kept in sync via `useEffect`:
+
+```
+carryingRef  ←→  carrying
+boxRef       ←→  box
+orderRef     ←→  orders[orderIndex]
+levelRef     ←→  LEVELS[currentLevel-1]
+sfxOnRef     ←→  sfxOn
+langRef      ←→  lang
+```
+
+`doInteract` is also a ref (`doInteract.current = (station) => { ... }`) reassigned every render, so it always reads fresh state through those mirrors.
+
+---
+
+## Screens
+
+The `screen` state drives which JSX block is rendered. Each block is a full early return.
+
+| `screen` value | What is shown |
+|---|---|
+| `'title'` | Title + level select |
+| `'playing'` | Factory floor with player, stations, HUD |
+| `'cutting'` | Cutting overlay (modal) |
+| `'boxing'` | Boxing area popup (modal) |
+| `'result'` | Order result popup (modal) |
+| `'levelComplete'` | Level complete screen |
+
+Screens other than `'playing'` are full-screen overlays (dark background, centred card). `'playing'` uses the game loop.
+
+---
+
+## Conveyor Belt Animation
+
+The conveyor is driven by two state values:
+- `conveyorAnimKey` — increments each time new food appears; used as a React `key` to remount and re-trigger the CSS `slideIn` animation
+- `conveyorAnimating` — boolean; enables the CSS stripe animation and the food slide; auto-clears after 1 400 ms via `conveyorTimerRef`
+
+`triggerConveyor()` is called when:
+- A level starts (200 ms delay via `setTimeout`)
+- A new order begins
+- The player bins their food
+- The player cancels a cut
+
+---
+
+## Audio
+
+All audio uses the Web Audio API with no external files. `_actx` is a module-level singleton; it is created lazily on first use (first interaction, bypassing autoplay restrictions).
+
+### Music
+`startMusic()` / `stopMusic()` — a 28-note melody in C major using triangle-wave oscillators, looped indefinitely via `setTimeout`. Each note has a 20 ms attack and 90% of its duration as sustain.
+
+Music defaults to **off** and must be enabled via Settings.
+
+### SFX (`playSFX(type)`)
+
+| Type | Sound |
+|---|---|
+| `'pickup'` | Three ascending sine tones (C5, E5, G5) |
+| `'slice'` | Bandpass-filtered noise burst + short sawtooth |
+| `'box'` | Low sine thump (220 Hz) |
+| `'success'` | Four ascending triangle tones (C5–C6 arpeggio) |
+| `'fail'` | Three descending sawtooth tones |
+| `'conveyor'` | Low-pass filtered white noise (rumble) |
+
+SFX respects `sfxOnRef.current`. All audio errors are silently swallowed.
+
+---
+
+## i18n (STRINGS)
+
+`STRINGS` is a top-level object with `fr` and `en` keys. Both contain identical key sets. Some values are functions:
+
+```js
+needCuts: (n, d) => `...`   // n = cuts required, d = denominator
+wrongNum: (pn, pd, an, ad) => `...`
+// etc.
+```
+
+`T = STRINGS[lang]` is computed once per render. Inside `doInteract` (which runs in a RAF callback), `STRINGS[langRef.current]` is used directly to avoid the stale-closure issue.
+
+### Adding a language
+1. Add a new key to `STRINGS` with all the same keys as `fr`
+2. Add the language option to the `SettingsPanel` renderer
+
+---
+
+## Components Reference
+
+### `FoodSVG({ name, size })`
+Renders any food as an inline SVG. Supports sizes from ~16 px (mini) to ~300 px (cutting screen). Used in:
+- Conveyor belt (60 px)
+- Player carrying display (28 px)
+- HUD order panel (32 px)
+
+### `CarriedPieceSVG({ pieces, food, isRound })`
+Shown above the player's head when carrying cut pieces. Renders a 34 px pie chart (round foods) or a 50 × 12 px segmented bar (rect foods) using the actual piece fractions. No number badge.
+
+### `CuttingDisplay({ food, isRound, lines, selectedCuts, phase, computedPieces, selectedPieces, onLineClick, onPieceClick, denominator })`
+The SVG for the cutting popup. Operates in two phases:
+- **`'cutting'`** — shows food + dashed guide lines + active cut lines. Each line has an invisible `strokeWidth=18` hit zone on top of the visible 2 px line (tolerance fix).
+- **`'selecting'`** — shows the pieces computed from the cuts. Clicked pieces shift outward (8 px in midRad direction) and get a green drop-shadow glow.
+
+### `Player({ x, y, carrying, interactingWith, interactProgress, moving, gender })`
+SVG character (36 × 36 px viewBox). Female variant has pink body, hair, and thicker eyebrows. The progress ring is an SVG arc driven by `interactProgress` (0–1). Carried items are rendered above the head via absolute positioning.
+
+### `SettingsPanel({ lang, setLang, gender, setGender, musicOn, setMusicOn, sfxOn, setSfxOn, onClose })`
+Modal overlay. Toggling music calls `startMusic()` / `stopMusic()` immediately. Language change takes effect on next render (all text re-derives from `T = STRINGS[lang]`).
+
+### `Btn({ children, onClick, color, disabled, small, style })`
+Pill-shaped button with scale-on-hover. `disabled` prop greys it out and removes the click handler.
+
+---
+
+## Cutting Screen Flow
+
+```
+Player stands near table for 1 s
+  → doInteract('table0') called
+  → generateCutLines(den, decoys, isRound) produces shuffled lines array
+  → screen = 'cutting', cutPhase = 'cutting'
+
+Player clicks lines (toggles selectedCuts Set)
+  → max allowed = denominator − 1
+
+Player clicks "Done Cutting"
+  → computePieces(selectedCuts, lines, isRound) → computedPieces stored in state
+  → cutPhase = 'selecting'
+  → sfx('slice')
+
+Player clicks pieces (toggles selectedPieces Set)
+
+Player clicks "Take Pieces"
+  → carrying.pieces = computedPieces filtered by selectedPieces, mapped to { fraction }
+  → screen = 'playing'
+```
+
+---
+
+## Order Flow (one full order)
+
+```
+Level start
+  → generateOrders(levelId) → 5 orders
+  → triggerConveyor() (food slides onto belt)
+
+Player → conveyor (1 s)
+  → carrying = { food, isRound, pieces: null }
+
+Player → cutting table (1 s)
+  → cutting screen (see above)
+  → carrying.pieces set
+
+Player → boxing (1 s)
+  → box += carrying.pieces mapped to { fraction, food }
+  → carrying = null
+  → screen = 'boxing'
+
+Boxing screen: "Keep Working" → screen = 'playing' (player can collect more food)
+Boxing screen: "Commit Order" → checkOrder(box, order, T) → screen = 'result'
+
+Result: correct on first attempt → levelStars += level.spo
+Result: "Next Order" → orderIndex++, box cleared, triggerConveyor()
+Result: "Try Again" → box cleared, carrying cleared (firstAttempt already false)
+
+After 5 orders → screen = 'levelComplete'
+  → completedLevels.add(currentLevel) → unlocks next level
+```
+
+---
+
+## Star System
+
+- `levelStars` accumulates during a level run (resets on `startLevel`)
+- `starsEarned[levelId]` stores the best score across replays (`Math.max`)
+- Stars are only added when `firstAttemptRef.current === true`; any failure on an order sets `firstAttempt = false` for that order
+- `firstAttempt` resets to `true` on each new order
+
+---
+
+## Styling Notes
+
+- All layout is **absolute positioning** within the 900 × 600 container
+- No Tailwind classes are used despite being mentioned in the original spec; all styles are inline
+- Fonts: `Fredoka One` (headings, numbers) and `Nunito` (body), loaded from Google Fonts via `@import` in `GlobalStyle`
+- Keyframe animations defined in `GlobalStyle`: `conveyor`, `slideIn`, `bob`, `scaleIn`, `confetti`, `sparkle`, `pulse`
+
+---
+
+## Known Limitations / Future Enhancement Areas
+
+### Gameplay
+- **No mobile / touch support** — controls are arrow-key only; adding on-screen D-pad would require touch event handlers and additional HUD space
+- **No persistence** — `starsEarned` and `completedLevels` are React state; refresh resets everything. Adding `localStorage` would preserve progress
+- **Level unlock is strict** — completing any level only unlocks the immediately next one; no way to jump ahead
+- **Improper fractions requiring > 2 food items** — theoretically possible (numerator up to 3× denominator) but the boxing flow already supports arbitrary multi-trip collection
+
+### Cutting screen
+- **No visual distinction** between correct and decoy lines before cutting — a future "hint" mode could briefly highlight correct lines
+- **The `isCorrect` field** on each line object is available but unused — could be used for accessibility, hint systems, or analytics
+- **Cutting table denominator label only** — if the player uses a wrong table and cuts into the right number of pieces by coincidence, the order check uses actual fractions (correct behaviour), but the table label might confuse them
+
+### Audio
+- **Music defaults to off** — Web Audio synthesis is functional but CPU-light; could be swapped for an `<audio>` element if external sound files are added
+- **No conveyor loop** — the conveyor SFX is a one-shot burst rather than a looping sound during animation
+
+### Localisation
+- Only French and English exist; adding Spanish/German requires only a new key in `STRINGS` and a flag in `SettingsPanel`
+- Level names are in `T.levelNames` (array, index 0–4) so they translate automatically
+
+### Visual
+- Food SVGs are simplified; more detail could be added to each `case` in `FoodSVG`
+- Character is a simple SVG; a sprite-sheet or Lottie animation would improve polish
+- No idle animations on stations (conveyor chevrons only animate on delivery)
+
+---
+
+## How to Add a New Level
+
+1. Add an entry to the `LEVELS` array (after index 4 for a 6th level):
+   ```js
+   { id:6, emoji:'⭐⭐⭐', tables:[5,8,9,12], type:'improper', decoys:5, spo:3 }
+   ```
+2. Add a level name to `STRINGS.fr.levelNames` and `STRINGS.en.levelNames`
+3. The title-screen loop renders all `LEVELS` automatically
+4. `starsEarned` initialiser needs a `6:0` entry (or change it to a dynamic initialiser)
+
+## How to Add a New Food Item
+
+1. Add the name to `ROUND_FOODS` or `RECT_FOODS`
+2. Add a `case` in `FoodSVG` with the SVG artwork (works at any size via `s = size`)
+3. Add an entry to `FOOD_FILL` (cutting screen body colour)
+4. Add an entry to `LINE_COLORS` (`guide` and `cut` colours that contrast with the fill)
+5. `CarriedPieceSVG` uses `FOOD_FILL` automatically — no extra work needed
+
+## How to Add a New Language
+
+1. Duplicate the `en` block inside `STRINGS` under a new key (e.g. `'de'`)
+2. Translate all string values (function values must return translated strings)
+3. In `SettingsPanel`, add a button for the new language code
+4. `langRef` and `T` propagation are automatic
+
+---
+
+## Dependency Versions (package.json)
+
+```json
+{
+  "react": "^18.3.1",
+  "react-dom": "^18.3.1",
+  "@vitejs/plugin-react": "^4.4.1",
+  "vite": "^5.4.2"
+}
+```
+
+No other runtime dependencies. The game uses only browser-native APIs (Web Audio, SVG, CSS animations, `requestAnimationFrame`).
